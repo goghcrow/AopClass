@@ -7,7 +7,7 @@
  * 3. 不支持静态方法的aop，不支持private方法的aop
  *
  * TODO：通过参数控制支持私有变量与方法的AOP（是否需要？）
- * 通配符情况下，Advice的参数有问题
+ * 通配符情况下，Advice的参数有问题(参数类型与数量不匹配)
  * 新建一个AopPoint类，统一Advice传入的参数
  *
  * @authre xiaofeng
@@ -119,21 +119,19 @@ class AopClass {
 		return $ret;
 	}
 
-}
-
-/**
- * 代理类
- * 避免冲突 不定义属性与正常方法（$_属性与代理方法（魔术方法）例外）
- * 理论上可以代理所有魔术方法
- */
-class ClassProxy {
-	private $_;
-
-	public function __construct(AopClass $aopClass) {
-		if($aopClass->refClass->hasProperty('_')) {
-			trigger_error('$_ property has been used');
+	/**
+	 * 包装原方法,用于around
+	 * @param  string $name 方法名
+	 * @param  array  $args 方法参数数组
+	 * @return closure
+	 */
+	public function methodWrapper($name, array $args) {
+		if($this->refObject === null) {
+			throw new BadMethodCallException("must be invoke to get obj");
 		}
-		$this->_ = $aopClass;
+		return function() use($args, $name){
+			return call_user_func_array([$this->refObject, $name], $args);
+		};
 	}
 
 	/**
@@ -143,9 +141,8 @@ class ClassProxy {
 	 * @param  &mixed    &$ret 返回值
 	 * @throws Exception
 	 */
-	private function exceptionHandler(Exception $e, $name, &$ret) {
-		$aop = $this->_;
-		$advices = $aop->getAdvices(AopClass::TYPE_EXCEPTION, AopClass::X, $name);
+	public function exceptionHandler(Exception $e, $name, &$ret) {
+		$advices = $this->getAdvices(AopClass::TYPE_EXCEPTION, AopClass::X, $name);
 		if($advices) {
 			// 参数通用引用传递，发生异常时可以修改返回值
 			// advice方法签名参数必须为引用
@@ -158,37 +155,21 @@ class ClassProxy {
 		}
 	}
 
-	/**
-	 * 包装原方法,用于around
-	 * @param  string $name 方法名
-	 * @param  array  $args 方法参数数组
-	 * @return closure
-	 */
-	private function methodWrapper($name, array $args) {
-		return function() use($args, $name){
-			return call_user_func_array([$this->_->refObject, $name], $args);
-		};
-	}
+}
 
-	/**
-	 * 调用原方法
-	 * @param  [type] $name [description]
-	 * @return [type]       [description]
-	 */
-	private function call($name, array $args) {
-		$obj = $this->_->refObject;
-		// return call_user_func_array([$obj, $name], $args);
+/**
+ * 代理类
+ * 避免冲突 禁止定义属性与正常方法（$_属性与代理方法（魔术方法）例外）
+ * 理论上可以代理所有魔术方法
+ */
+final class ClassProxy {
+	private $_;
 
-		// 替换成反射方式invoke
-		$refMethod = new ReflectionMethod($this->_->refObject, $name);
-		if(!$refMethod->isPublic()) {
-			throw new BadMethodCallException("method $name is not public");
+	public function __construct(AopClass $aopClass) {
+		if($aopClass->refClass->hasProperty('_')) {
+			trigger_error('$_ property has been used');
 		}
-		if($refMethod->getNumberOfParameters()) {
-			return $refMethod->invoke($obj);
-		} else {
-			return $refMethod->invokeArgs($obj, $args);
-		}
+		$this->_ = $aopClass;
 	}
 
 	/**
@@ -219,19 +200,18 @@ class ClassProxy {
 			try {
 				// advice 接受三个参数
 				// 1.原方法传入参数，可修改, 2.旧方法closure, 3.around返回值carry
-				array_walk($advices, function($advice) use(&$args, &$ret, $name) {
-					$ret = $advice($args, $this->methodWrapper($name, $args), $ret);
+				array_walk($advices, function($advice) use(&$args, &$ret, $aop, $name) {
+					$ret = $advice($args, $aop->methodWrapper($name, $args), $ret);
 				});
 			} catch(Exception $e) {
-				$this->exceptionHandler($e, $name, $ret);
+				$aop->exceptionHandler($e, $name, $ret);
 			}
 		} else {
 			// EXCEPTION
 			try  {
-				// $ret = $this->call($name, $args);
 				$ret = call_user_func_array([$aop->refObject, $name], $args);
 			} catch(Exception $e) {
-				$this->exceptionHandler($e, $name, $ret);
+				$aop->exceptionHandler($e, $name, $ret);
 			}
 		}
 
